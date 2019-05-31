@@ -1,0 +1,262 @@
+
+{load_file("nrngui.hoc") }         //I assume these libraries will load from the first /nrn path
+{load_file("stdrun.hoc")}
+{load_file("stdlib.hoc")} 
+{load_file("netparmpi.hoc")}
+{load_file("./externals.hoc")}
+{load_file("./templates/syn.tem")}
+{load_file("./templates/gap.tem")}
+{load_file("./templates/iapp.tem")}
+{load_file("./templates/pyrkop.tem")}
+{load_file("./templates/bwb.tem")}
+{load_file("./templates/ok.tem")}
+{load_file("./parameters/synapses.tem")}
+{load_file("./parameters/manycells.tem")} 
+{load_file("./templates/TGbignet2.tem")}
+
+
+if(doextra){
+	//print "doing EXTRACELLULAR stuff..........."
+	{load_file("./interpxyz.hoc")}	// only interpolates sections that have extracellular
+	{load_file("./setpointers.hoc")}  // has the function grindaway() in interpxyz.hoc to set up pointers
+	{load_file("./field.hoc")} //functions to calculate the extracellular voltage
+	{load_file("./calcrxc_a.hoc")}  //function to create the transfer resistance from each section
+}
+
+strdef cmd
+numiters=1
+objref pr, pc, nil, pyrspiketau_vec, baskspiketau_vec, baskconnvector, ipspg_vec, fih_progress, hines
+
+hinest1=startsw()
+hinest2=startsw()
+
+gapstyle=96  //split baskets right, many tests
+gapstyle=97
+gapstyle=0  //this is to signify running it with the newer version, with the noisesyn mods added
+
+//29 ungapped baskets, 2 rows of 10 inline gaps between pyr cells (.01 - high) 1-10 and 41-50
+antennaDC=1.3 //constant current added to antenna cells //1.3 default
+
+realrunFlag=1
+shortspikeFlag=1
+//celsius = 34   //for some reason this line gives an error for being out of range
+iteration=0
+{cvode.active(0)}
+
+
+
+num_trials=1  //set number of different trials for each combination of pyrspike_tau, baskspike_tau, baskconnvector, and ipspgmax. There will be a different global seed for each simulation
+gind_start=0  //global index at which to start, in the parameter sweep
+
+{pyrspiketau_vec = new Vector()}
+{baskspiketau_vec = new Vector()}
+{baskconnvector = new Vector()}
+{ipspg_vec = new Vector()}
+
+//
+{pyrspiketau_vec.append(0.1)} //mean time between arrival of noise events to pyramidal cells (so smaller number implies more intense noise)
+
+//
+{baskspiketau_vec.append(6)}  //mean time between arrival of noise events to basket cells (so smaller number implies more intense noise)
+{baskconnvector.append(100)}    //controls what percentage of possible connections from basket cells to pyramidal cells are realized
+{ipspg_vec.append(5.5)}  //gmax for bask->pyr synapses, which goes into _f# in the filename default 5.5
+
+objref s
+
+pc = new ParallelContext()
+pc.subworlds(1)
+
+func getTstop() { return Tstop }
+
+proc prinit() {    //had to change name because non-pr functions couldn't address pr
+
+print "prinit funct running"
+	{pr.setScatteredVoltages(-85, -60)}
+
+	{pr.connectNetwork($1,$2)}  // took this out of init() in TGbignet2.tem
+	{pr.setSeed($3)} //set global index for Random123 
+	// { pr.activeSynapsesZero()} //CF: This inactivates all connections. I have no idea why you would want to do this.
+    finitialize() 
+  	finitialize() 
+}
+
+proc TG(){
+
+	//print "TG func running"
+
+	pr  = new TGbignet2() ////main program to build the network and generate stimuli and noise 
+	print "==============>>>>>>" 
+	print pr
+
+
+}
+func onerun() {local id, num, ipspg, pyrthr, basketthr, pyr_spike_tau, bask_spike_tau, bask_perc, temp_time, temp_tau,ii localobj pc, fo, fo1, forast,forast2
+	print "onerun func running"
+	id= hoc_ac_
+	pc = new ParallelContext()
+	
+	s=new Shape()
+	s.show(0)
+	
+	
+	if(doextra) {
+		print "Doing EXTRACELLULAR stuff.....    ....."
+		setpointers()
+		setelec(-50,$6, $7)
+	}
+	print "id_world number ", pc.id_world, "  id_bbs ", pc.id_bbs, "  id   ", id, " pc.id  ", pc.id 
+	
+	{pr.recordVoltages()}
+	{pr.pnm.set_maxstep(0.01)}
+	{pr.pnm.want_all_spikes()}
+	runningTime = startsw()
+
+	stdinit()
+
+	bask_perc=$3  //percentage of inhibitory connections that are allowed to exist
+	ipspg=$4
+	print "ipspg=",ipspg
+	g_ind=$5
+	prinit(bask_perc,ipspg,g_ind)   //added this extra function to allow for non-pr functions.  The input is passed to connectNetwork as the connthr
+	normmean=0    //can set this to $5 if useful in the future
+
+
+	pyr_spike_tau=$1
+	pyr_nospike_tau=1
+	bask_spike_tau=$2
+	bask_nospike_tau=6
+	
+	{ pr.activatePyrSynapses(pyr_spike_tau,pyr_nospike_tau) }
+	{ pr.activateAntSynapses(pyr_spike_tau,pyr_nospike_tau) }
+	{ pr.activateBaskSynapses(bask_spike_tau,bask_nospike_tau) }
+	{ pr.addAntennaDC(antennaDC) } 
+	pc.post(id, pyrthr, ipspg, basketthr)	
+	
+	forast = new File()
+	forast2 = new File()
+	sprint(cmd, "data/spikes_b%4.2f_p%4.2f_g%4.2f_f%d.dat", bask_spike_tau, pyr_spike_tau, ipspg,bask_perc)
+	{ forast.wopen(cmd) }
+	
+	sprint(cmd, "data/spikes_b%4.2f_p%4.2f_g%4.2f_f%d_SUM.dat", bask_spike_tau, pyr_spike_tau, ipspg,bask_perc)
+	{ forast2.aopen(cmd) }
+	
+	
+		//advance through simulation in increments of t_seg (defined in externals.hoc); after every t_seg, write voltage data to files, and delete vectors containing this data,
+	//so that program does not run out of memory
+	t_curr = 0
+	while (t_curr < Tstop-dt){ //include the '-dt' to account for rounding error; otherwise, may get error in writeVoltages
+		print "Time = ",t_curr
+		if(t_curr + t_seg < Tstop) {
+			{ pr.pnm.pcontinue(t_curr+t_seg)}
+		} else {
+			{pr.pnm.pcontinue(Tstop)}
+		}
+		for i=0, pr.pnm.spikevec.size-1 {
+			forast.printf("%-10.6lf, %d\n", pr.pnm.spikevec.x[i], pr.pnm.idvec.x[i])
+			forast2.printf("%-10.6lf, %d\n", pr.pnm.spikevec.x[i], pr.pnm.idvec.x[i])
+			//{ pr.sado() } 
+		}
+		pr.pnm.spikevec.resize(0)
+		pr.pnm.idvec.resize(0) 
+		
+		pr.writeVoltages(bask_spike_tau, pyr_spike_tau, ipspg, bask_perc,t_curr)
+		
+		t_curr = t_curr + t_seg
+		
+	}
+	{forast.close()}
+	{forast2.close()}
+	runningTime = startsw() - runningTime
+	iteration=iteration+1
+	print "Running Time: ", runningTime, "iteration: ",iteration
+		
+
+ 	if (realrunFlag){
+		{fo=new File()}
+		{sprint(cmd, "spikes_b%4.2f_p%5.3f_g%4.2f_f%d.dat", bask_spike_tau, pyr_spike_tau,ipspg,bask_perc)}
+		{fo.aopen("data/spikelog.dat")}
+		{fo.printf("%s\n",cmd)}
+		{fo.close()}
+		{fo=new File()}
+		{sprint(cmd, "sum_b%4.2f_p%5.3f_g%4.2f_f%d.dat", bask_spike_tau, pyr_spike_tau,ipspg,bask_perc)}
+		{fo.aopen("data/sumlog.dat")}
+		{fo.printf("%s\n",cmd)}
+		{fo.close()}
+		pr.writeParameters(bask_spike_tau, pyr_spike_tau, gapstyle, ipspg, bask_nospike_tau, pyr_nospike_tau, antennaDC, Tstop, t_seg) //write parameters to file
+
+	}
+ 	
+	
+	{pc.gid_clear()}
+	{pr.pnm.pc.gid_clear()}
+	pr=nil    		
+	return id
+	
+}
+
+
+proc progress() {
+	print t
+	cvode.event(t+100, "progress()" )
+}
+
+proc hines1() {
+        printf("pc.id_world= %d pc.id_bbs= %d t= %g dt= %g dreal=%g treal=%g\n", pc.id_world, pc.id_bbs, t, dt, startsw()-hinest2, startsw()-hinest1)
+        hinest2 = startsw()
+        cvode.event(t + 10, "hines1()")
+}
+
+{pc.runworker()}
+
+proc series() {local i, j, k, delay, tstop, id, spkcnt, tmax, gid, num,ycor,zcor
+
+	ycor=$1
+	zcor=$2
+	for i = 0, pyrspiketau_vec.size()-1 {
+		for j = 0, baskspiketau_vec.size()-1 {
+			for k = 0, baskconnvector.size()-1 {
+			  for l = 0, ipspg_vec.size()-1 {
+			  		for m = 0, num_trials-1 {
+						//generate a different global index for each simulation
+						g_index = gind_start+i*baskspiketau_vec.size()*baskconnvector.size()*ipspg_vec.size()*num_trials + j*baskconnvector.size()*ipspg_vec.size()*num_trials + k*ipspg_vec.size()*num_trials + l*num_trials + m
+						print "g_index=", g_index
+
+						{pc.submit("onerun", pyrspiketau_vec.x[i], baskspiketau_vec.x[j], baskconnvector.x[k], ipspg_vec.x[l],g_index,ycor,zcor)}
+					}
+			    }
+			}
+		}
+	}
+	while ((id= pc.working())!=0) {
+		pc.take(id, &num)
+		printf("num= %d", num)
+	}
+}
+
+// For loops to simulate large electrodes and micro electrode arrays
+for(ycor=-50;ycor<55;ycor=ycor+5){
+	for(zcor=-50;zcor<55;zcor=zcor+5){
+TG()
+series(ycor,zcor) //this line actually runs the simulation
+print "YCOR=",ycor,"ZCOR=",zcor
+
+}
+}
+
+/*
+//series(0,0)
+{
+TG()
+series(0,0) //this line actually runs the simulation
+}*/
+
+{pc.done()}
+
+
+
+
+
+
+//deneme()
+
+//quit() 
